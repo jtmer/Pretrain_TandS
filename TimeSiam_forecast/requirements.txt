@@ -1,0 +1,14 @@
+einops
+matplotlib
+numpy
+pandas
+patool
+reformer_pytorch
+scikit_learn
+scipy
+sktime
+sympy
+torch
+tqdm
+tensorboardX
+seaborn
