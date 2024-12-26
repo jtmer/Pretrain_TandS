@@ -9,7 +9,7 @@ representation_using=avg
 
 python -u run.py \
     --pretrain_type timesiam \
-    --operation fine_tune \
+    --operation train \
     --task regression \
     --is_training 1 \
     --root_path ./dataset/ETT/ \
