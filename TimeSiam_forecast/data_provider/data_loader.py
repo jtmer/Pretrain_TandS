@@ -613,11 +613,11 @@ class Dataset_Custom(Dataset):
         else:
             data = df_data.values
 
-        # 如果任务是分类任务，则对目标特征进行 One-Hot 编码
-        if self.args.task == 'classification':
-            onehot_encoder = OneHotEncoder(sparse=False)
-            target_onehot = onehot_encoder.fit_transform(df_raw[[self.target]])
-            df_data[self.target] = target_onehot  # 替换目标列为 One-Hot 编码结果
+        # # 如果任务是分类任务，则对目标特征进行 One-Hot 编码
+        # if self.args.task == 'classification':
+        #     onehot_encoder = OneHotEncoder(sparse=False)
+        #     target_onehot = onehot_encoder.fit_transform(df_raw[[self.target]])
+        #     df_data[self.target] = target_onehot  # 替换目标列为 One-Hot 编码结果
 
         df_stamp = df_raw[['date']][border1:border2]
         df_stamp['date'] = pd.to_datetime(df_stamp.date)
@@ -638,6 +638,12 @@ class Dataset_Custom(Dataset):
     def __getitem__(self, index):
         s_begin = index
         s_end = s_begin + self.seq_len
+          
+        if self.args.task == 'regression' and self.args.operation != 'pretrain':
+            slice = self.data_x[s_begin:s_end]
+            seq_x = slice[:, :-1]
+            labels = slice[:, -1]
+            return seq_x, labels
 
         if self.sampling_range == 0:
             r_begin = s_begin

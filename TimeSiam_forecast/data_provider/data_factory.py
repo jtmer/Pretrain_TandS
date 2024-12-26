@@ -18,7 +18,8 @@ data_dict = {
     'saidi': Saidi_lab,
     'custom': Dataset_Custom,
     'gas': Dataset_Custom,
-    'classification': Dataset_Classification
+    'classification': Dataset_Classification,
+    'regression': Dataset_Custom,
 }
 
 

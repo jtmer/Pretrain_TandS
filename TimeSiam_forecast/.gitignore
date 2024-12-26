@@ -1,6 +1,4 @@
-outputs/checkpoints/
-outputs/logs/
-outputs/test_results/
+outputs/**
 **/__pycache__/
 **/.DS_Store
 logs

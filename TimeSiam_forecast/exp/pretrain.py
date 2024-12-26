@@ -1041,6 +1041,223 @@ def get_model(model):
     "Return the model maybe wrapped inside `model`."
     return model.module if isinstance(model, (DistributedDataParallel, nn.DataParallel)) else model
 
+class Exp_Regression(Exp_Basic):
+    def __init__(self, args):
+        super(Exp_Regression, self).__init__(args)
+
+    def _build_model(self):
+        # model init    
+        model = self.model_dict[self.args.model].Model(self.args).float()
+        
+        if self.args.load_checkpoints:
+            print("Loading ckpt: {}".format(self.args.load_checkpoints))
+
+            model = transfer_weights(self.args.load_checkpoints, model)
+
+        if torch.cuda.device_count() > 1:
+            print("Let's use", torch.cuda.device_count(), "GPUs!", self.args.device_ids)
+            model = nn.DataParallel(model, device_ids=self.args.device_ids)
+
+        # print out the model size
+        print('number of model params', sum(p.numel() for p in model.parameters() if p.requires_grad))
+
+        return model
+
+    def _get_data(self, flag):
+        data_set, data_loader = data_provider(self.args, flag)
+        return data_set, data_loader
+
+    def _select_optimizer(self):
+        # model_optim = optim.Adam(self.model.parameters(), lr=self.args.learning_rate)
+        model_optim = optim.RAdam(self.model.parameters(), lr=self.args.learning_rate)
+        return model_optim
+    
+    def _select_criterion(self):
+        criterion = nn.MSELoss()
+        return criterion
+    
+    def train(self, setting):
+        train_data, train_loader = self._get_data(flag='train')
+        vali_data, vali_loader = self._get_data(flag='val')
+        # test_data, test_loader = self._get_data(flag='test')
+
+        path = os.path.join(self.args.checkpoints, setting)
+        if not os.path.exists(path):
+            os.makedirs(path)
+
+        train_steps = len(train_loader)
+        early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
+
+        model_optim = self._select_optimizer()
+        criterion = self._select_criterion()
+        
+        scheduler = lr_scheduler.OneCycleLR(optimizer = model_optim,
+                                            steps_per_epoch = train_steps,
+                                            pct_start = self.args.pct_start,
+                                            epochs = self.args.train_epochs,
+                                            max_lr = self.args.learning_rate)
+
+        for epoch in range(self.args.train_epochs):
+            iter_count = 0
+            train_loss = []
+
+            self.model.train()
+            start_time = time.time()
+            
+            for i, (batch_x, batch_y) in enumerate(train_loader):
+                iter_count += 1
+                model_optim.zero_grad()
+                
+                batch_x = batch_x.float().to(self.device)
+                batch_y = batch_y.float().to(self.device)
+
+                outputs = self.model(batch_x, None, None, None)
+                
+                # 使用batch_y对outputs反归一化 [bs x target_window x 1]
+                stdev = batch_y.std(dim=1, keepdim=True)
+                mean = batch_y.mean(dim=1, keepdim=True)
+                outputs = outputs * stdev + mean
+
+                loss = criterion(outputs, batch_y)
+                train_loss.append(loss.item())
+
+                loss.backward()
+                nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=4.0)
+                model_optim.step()
+
+            train_loss = np.average(train_loss)
+            vali_loss = self.vali(vali_data, vali_loader, criterion)
+            # test_loss = self.vali(test_data, test_loader, criterion)
+
+            end_time = time.time()
+            print("Epoch: {0}, Steps: {1}, Time: {2:.2f}s | Train Loss: {3:.7f} Vali Loss: {4:.7f}".format(
+                epoch + 1, train_steps, end_time-start_time, train_loss, vali_loss))
+            early_stopping(vali_loss, self.model, path)
+            if early_stopping.early_stop:
+                print("Early stopping")
+                break
+            
+            adjust_learning_rate(model_optim, scheduler, epoch + 1, self.args)
+            
+        best_model_path = path + '/' + 'checkpoint.pth'
+        self.model.load_state_dict(torch.load(best_model_path))
+        # self.lr = model_optim.param_groups[0]['lr']
+        
+        return self.model
+    
+    def vali(self, vali_data, vali_loader, criterion):
+        total_loss = []
+        self.model.eval()
+        with torch.no_grad():
+            for i, (batch_x, batch_y) in enumerate(vali_loader):
+                batch_x = batch_x.float().to(self.device)
+                batch_y = batch_y.float().to(self.device)
+
+                outputs = self.model(batch_x, None, None, None)
+                
+                stdev = batch_y.std(dim=1, keepdim=True)
+                mean = batch_y.mean(dim=1, keepdim=True)
+                outputs = outputs * stdev + mean
+
+                pred = outputs.detach()
+                loss = criterion(pred, batch_y)
+                total_loss.append(loss.item())
+                
+        total_loss = np.average(total_loss)
+        self.model.train()
+        return total_loss
+    
+    def test(self, setting):
+        test_data, test_loader = self._get_data(flag='test')
+
+        preds = []
+        trues = []
+        folder_path = './outputs/test_results/{}'.format(self.args.data)
+        if not os.path.exists(folder_path):
+            os.makedirs(folder_path)
+
+        self.model.eval()
+        with torch.no_grad():
+            for i, (batch_x, batch_y) in enumerate(test_loader):
+                batch_x = batch_x.float().to(self.device)
+                batch_y = batch_y.float().to(self.device)
+
+                outputs = self.model(batch_x, None, None, None)
+                
+                stdev = batch_y.std(dim=1, keepdim=True)
+                mean = batch_y.mean(dim=1, keepdim=True)
+                outputs = outputs * stdev + mean
+
+                pred = outputs.detach().cpu().numpy()
+                true = batch_y.detach().cpu().numpy()
+                
+                if i%self.args.seq_len == 0:
+                    preds.append(pred[0])
+                    trues.append(true[0])
+
+        preds = np.array(preds)
+        trues = np.array(trues)
+        preds = preds.flatten()
+        trues = trues.flatten()
+
+        print(preds.shape, trues.shape)
+
+        mae, mse, rmse, mape, mspe = metric(preds, trues)
+        print('{0}->{1}, mse:{2:.3f}, mae:{3:.3f}'.format(self.args.seq_len, self.args.pred_len, mse, mae))
+        f = open("./outputs/score.txt", 'a')
+        f.write('{0}->{1}, {2:.3f}, {3:.3f} \n'.format(self.args.seq_len, self.args.pred_len, mse, mae))
+        f.close()
+        
+        # import matplotlib.pyplot as plt
+
+        # def plot_predictions(preds, trues, folder_path):
+        #     plt.figure(figsize=(12, 6))
+        #     plt.plot(preds, label='Predictions')
+        #     plt.plot(trues, label='True Values')
+        #     plt.xlabel('Time')
+        #     plt.ylabel('Values')
+        #     plt.title('Predictions vs True Values')
+        #     plt.legend()
+        #     plt.grid(True)
+        #     # plt.savefig(os.path.join(folder_path, 'predictions_vs_true_values.png'))
+        #     plt.savefig('predictions_vs_true_values.png')
+        #     plt.close()
+
+        # # Call the plot function after testing
+        # plot_predictions(preds, trues, folder_path)
+        
+    def unfreeze(self):
+        for name, param in get_model(self.model).named_parameters():
+            if 'token' in name:
+                param.requires_grad = False
+                # print('freeze:', name)
+                continue
+            param.requires_grad = True
+            # print('unfreeze:', name)
+        
+    def fine_tune(self, setting):
+        """
+        Finetune the entire network
+        """
+        if self.args.operation == 'train':
+            print('Training the entire network!')
+            self.unfreeze()
+        elif self.args.operation == 'fine_tune':
+            print('Fine-tuning the entire network!')
+            self.unfreeze()
+        # elif self.args.operation == 'fine_tune_part':
+        #     print('Fine-tuning part network!')
+        #     self.freeze_part()
+        # elif self.args.operation == 'linear_probe':
+        #     print('Fine-tuning the head!')
+        #     self.freeze()
+        else:
+            raise ValueError("Wrong task_name {}!".format(self.args.task_name))
+
+        print('>>>>>>>start training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(setting))
+        self.train(setting)
+        print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
+        self.test(setting)
 
 class Exp_Classification(Exp_Basic):
     def __init__(self, args):

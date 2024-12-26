@@ -1,6 +1,6 @@
 import argparse
 import torch
-from exp.pretrain import Exp_Train, Exp_Pretrain_TimeSiam, Exp_Pretrain_PatchTST, Exp_Pretrain_SimMTM, Exp_Classification
+from exp.pretrain import Exp_Train, Exp_Pretrain_TimeSiam, Exp_Pretrain_PatchTST, Exp_Pretrain_SimMTM, Exp_Classification, Exp_Regression
 import random
 import numpy as np
 import os
@@ -146,6 +146,8 @@ if args.operation == 'pretrain':
         Exp = Exp_Pretrain_SimMTM
 elif args.task == 'classification':
     Exp = Exp_Classification
+elif args.task == 'regression':
+    Exp = Exp_Regression
 else:
     Exp = Exp_Train
 
